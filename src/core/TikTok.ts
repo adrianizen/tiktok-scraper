@@ -13,6 +13,7 @@ import { EventEmitter } from 'events';
 import { SocksProxyAgent } from 'socks-proxy-agent';
 import { forEachLimit } from 'async';
 import { URLSearchParams } from 'url';
+import Signer from 'tiktok-signature';
 import CONST from '../constant';
 import { sign, makeid } from '../helpers';
 
@@ -33,6 +34,7 @@ import {
     Headers,
     WebHtmlUserMetadata,
     VideoMetadata,
+    APIUserMetadata,
 } from '../types';
 
 import { Downloader } from '../core';
@@ -126,6 +128,8 @@ export class TikTokScraper extends EventEmitter {
     private store: string[];
 
     public cookieJar: CookieJar;
+
+    private signer: Signer;
 
     constructor({
         download,
@@ -359,6 +363,7 @@ export class TikTokScraper extends EventEmitter {
 
             try {
                 const response = await rp(options);
+
                 // Extract valid csrf token
                 if (options.method === 'HEAD') {
                     const csrf = response.headers['x-ware-csrf-token'];
@@ -408,7 +413,14 @@ export class TikTokScraper extends EventEmitter {
             return this.returnInitError('Missing input');
         }
 
+        // Initiate Signer
+        const signer = new Signer(null, this.headers['user-agent']);
+        await signer.init();
+        this.signer = signer;
+
         await this.mainLoop();
+
+        await signer.close(); // Close browser. Returns promise
 
         if (this.event) {
             return this.emit('done', 'completed');
@@ -659,6 +671,8 @@ export class TikTokScraper extends EventEmitter {
             zip = this.zip ? `${this.fileDestination}.zip` : this.folderDestination;
 
             await this.saveMetadata({ json, csv });
+        } else {
+            console.log('No data found to dump into file');
         }
         if (this.cli) {
             this.spinner.stop();
@@ -920,14 +934,37 @@ export class TikTokScraper extends EventEmitter {
         this.storeValue = this.scrapeType === 'trend' ? 'trend' : qs.id || qs.challengeID! || qs.musicID!;
 
         const unsignedURL = `${this.getApiEndpoint}?${new URLSearchParams(qs as any).toString()}`;
-        const _signature = sign(unsignedURL, this.headers['user-agent']);
+        // const _signature = sign(unsignedURL, this.headers['user-agent']);
+
+        // Signer
+
+        const signature = await this.signer.sign(unsignedURL); // Get sign for your url. Returns promise
+
+        // We don't take the `signed_url` from the response, we use the `x-tt-params` header instead because TikTok has
+        // some weird security considerations. I'm not sure if it's a local encode or they actually make a call to their
+        // servers to get the signature back, but your API call params are in the `x-tt-params` header, which is used
+        // when making the request to the static URL `TT_REQ_PERM_URL` above. I'm assuming because the library launches
+        // a headless browser, it's a local encode.
+        const { x_tt_params } = signature;
+        // end signer
 
         const options = {
             uri: this.getApiEndpoint,
             method: 'GET',
             qs: {
                 ...qs,
-                _signature,
+                // _signature,
+            },
+            gzip: true,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/102.0.0.0 Safari/537.36',
+                Host: 'tiktok.com',
+                'Accept-Encoding': 'gzip, deflate, br',
+                Connection: 'keep-alive',
+                Accept: '*/*',
+                Cookie:
+                    'tt_csrf_token=6SIDD67P-j5D8CDI6u5xiE7S67U5QrYG5KeM; __tea_cache_tokens_1988={"_type_":"default"}; s_v_web_id=verify_l48o7f0r_ciSxKgFj_jwiW_4p8x_ArVX_CQfpHT5roSTv; _abck=06028C54C4FC24FE8C9D69F9F52387F3~-1~YAAQZf1ebyrtRCmBAQAA7qMgUgiKMPjtTvkn03Z7P5Y3tJL+B4roARrCWaGVni1/CdPaF8XT+vY7AiZiPidZuvhotmCx5roWn1R3oRsYidkQEf9FjAUxunO5LohBShP6EkrT3fLIShA0rxAafZzI2GLpMszEb60CBN6Tjy1maB8lOQeHZcy229JFPSwb1FsTqoRBlGPco+mqLXUXFAktnmN/eW3jenVn4BJn3noyQV5mMPfOJw0Lig2+KC6wj/tw5ZWqaAEdLA0LcqVQ7KlQ2XCsm+ODufZ7q7WQqccUqCbGuvMvpCzXf0GbR+Fssd1knwRZmcF0rRlF3kdH3p4abLUNr8xvLVhi2jltq3o9JwX2GhWSxsAzK7o6XfNIoyc5fv8X1V9klMeXwA==~-1~-1~-1; bm_sz=32F1E8CEE64953B09E5CCD37E4314001~YAAQZf1ebyztRCmBAQAA7qMgUhDLdV36bSXnGFjpbqf1R/Vrq2Oubmyp2ZWBfqJXgoC181LpdCLD0WsCQAe6f+LCix4jvdpzhxHemtusT8UCE7csoV+YkPlOjx4B8xXvx65n5ozc2Le0oTCSYCRJaOPeuiWg0aXZ3nU5mA2uJE2DcXz31HdHY5l86hSSwTyoXUeYlRk4TkCCVMWsbW74d0sH0OaCUkXJaGlHeLBfzBr8YeCF6ZDXkvUPqfFTLsFTJLNmz995oFFFCTQRMZBYvZbrCd52tQcV09jqwxwfg91URZc=~3551301~3359813; msToken=SJg3R9xHsZMjN9CcblOQp2Zi_HE00TyvPQoVWlco2azZp00KfzFu4Fh7HU_VSvdx6VJBdxMSiwqJHYMLXMMH1Vt6ccTmDo2fBpEG4VkGD3WvMRA8QM2BrUMZnbblA7Rtm2QFGjYK8jVP6X4=; msToken=Hb0gCsRgUJ9zyxf1SH2zo7h7ebw2et3jOG3qm7a73DazZI8TdNjZQSEUNVh0i8heKDSj8hsvkWCnaSB1pcfnzW2wie5ghOB2V9t3aHARmoSzhMeNYckFBKX2PiRkV2JIklACWwcFSllMwBg=; ak_bmsc=2EED862E144C3063AAA64591C02579A4~000000000000000000000000000000~YAAQRf5eb8DmsiaBAQAAntilUhByCFv1kewV06ZQp0LyrwVQBagRFY/FUmrI3tPf65GsjqPS1+6MCmMP52VZOd4hClaSs2rewi/KtCj3K1j+gE1Hkn7pl4QWVbAQicSdVN0xJZlsWs5+BlZa6yWSem6r4ec4cBrPoAl41Ag21iOsgXuoCpb5Nfb7JSygkjWFHAeT0dftgAnZ15XqjkX6kmAq7XR5S6EGXJBuBx/azie4XWgE5k+NZG4m9E5ErFoVttsqHI+mZ84D5N+EBNY9pBQUrwoQZwCzkBBZIAYsLaqIYDXuaS1sE2OJHTPt7EjOO5MZ12IwUg2AuJVeFoJodOaS464NqQ8XgvrB0GlLf0j1aPkVpXAPkFc34f+aLAsMt05DCif1C+WASm8Q; ttwid=1|CpuP7rzQmOZir33aB2iwLcBtizcMzhOKaT5XLH-o39U|1654949015|4295780781b2bfaee4f2becda3b931477c549b7bd7e9737fdf0f277c71f79c07',
+                'x-tt-params': x_tt_params,
             },
             json: true,
         };
@@ -1036,9 +1073,13 @@ export class TikTokScraper extends EventEmitter {
         }
 
         try {
-            const response = await this.getUserProfileInfo();
-            this.idStore = response.user.secUid;
-            this.userIdStore = response.user.id;
+            // const response = await this.getUserProfileInfo();
+            // this.idStore = response.user.secUid;
+            // this.userIdStore = response.user.id;
+
+            const response = await this.getUserProfileInfoV1();
+            this.idStore = response.userInfo.user.secUid;
+            this.userIdStore = response.userInfo.user.id;
             return {
                 id: this.userIdStore,
                 aid: 1988,
@@ -1073,6 +1114,7 @@ export class TikTokScraper extends EventEmitter {
         };
         try {
             const response = await this.request<string>(options);
+
             const breakResponse = response
                 .split(/<script id="__NEXT_DATA__" type="application\/json" nonce="[\w-]+" crossorigin="anonymous">/)[1]
                 .split(`</script>`)[0];
@@ -1086,6 +1128,60 @@ export class TikTokScraper extends EventEmitter {
             }
         }
         throw new Error(`Can't extract user metadata from the html page. Make sure that user does exist and try to use proxy`);
+    }
+
+    /**
+     * Get user profile information V1
+     * @param {} username
+     */
+    public async getUserProfileInfoV1(): Promise<APIUserMetadata> {
+        if (!this.input) {
+            throw new Error(`Username is missing`);
+        }
+
+        const endpoint = 'https://www.tiktok.com/api/user/detail/';
+        const qs = {
+            uniqueId: this.input,
+            aid: 1988,
+            app_language: 'en',
+            app_name: 'tiktok_web',
+            channel: 'tiktok_web',
+            device_platform: 'web_pc',
+            history_len: 3,
+        };
+
+        const options = {
+            method: 'GET',
+            uri: endpoint,
+            qs: {
+                ...qs,
+            },
+            gzip: true,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/102.0.0.0 Safari/537.36',
+                Host: 'tiktok.com',
+                'Accept-Encoding': 'gzip, deflate, br',
+                Connection: 'keep-alive',
+                Accept: '*/*',
+                Cookie:
+                    // '_ttp=29DHmjf9BrQacE8MFLlqQVdmPys; __tea_cache_tokens_1988={"_type_":"default"}; passport_csrf_token=3cb98be850b912ef251264c61699df67; passport_csrf_token_default=3cb98be850b912ef251264c61699df67; cmpl_token=AgQQAPOgF-RO0rKfCX7KNJ07-MKpZPRQv4ArYMdCng; passport_auth_status=b621674c27ba264886cdd924f88ef89d,; passport_auth_status_ss=b621674c27ba264886cdd924f88ef89d,; sid_guard=964a01c34aef65511018b643241ee525|1654862062|5184000|Tue,+09-Aug-2022+11:54:22+GMT; uid_tt=f724fd274ac8d6b3d1b89adff2eed6c916920cc63be6f7394edb87a93d3f58ad; uid_tt_ss=f724fd274ac8d6b3d1b89adff2eed6c916920cc63be6f7394edb87a93d3f58ad; sid_tt=964a01c34aef65511018b643241ee525; sessionid=964a01c34aef65511018b643241ee525; sessionid_ss=964a01c34aef65511018b643241ee525; sid_ucp_v1=1.0.0-KDYxOTcxMzY0ZGI5N2MwZWZiNTFkZjM3NTE1YWM2MzBiMzEzMDc3YWUKHwiCiJmQlPv50GIQ7uGMlQYYswsgDDDuz4eVBjgIQAkQAxoGbWFsaXZhIiA5NjRhMDFjMzRhZWY2NTUxMTAxOGI2NDMyNDFlZTUyNQ; ssid_ucp_v1=1.0.0-KDYxOTcxMzY0ZGI5N2MwZWZiNTFkZjM3NTE1YWM2MzBiMzEzMDc3YWUKHwiCiJmQlPv50GIQ7uGMlQYYswsgDDDuz4eVBjgIQAkQAxoGbWFsaXZhIiA5NjRhMDFjMzRhZWY2NTUxMTAxOGI2NDMyNDFlZTUyNQ; store-idc=useast2a; store-country-code=id; tt-target-idc=alisg; xgplayer_device_id=77094544771; xgplayer_user_id=400792618719; tt_csrf_token=Ruc5rGU5-BdeJmiuXWkKjh7kH1SOHSr5y-Uk; ak_bmsc=0B8222CE03E749822F7F54BDDADE22B6~000000000000000000000000000000~YAAQdv1eb3Uy+CqBAQAA06cgUhAlEOJZkaPv1ULkO7LHfnuLZQIRy+7bd/QSvnTCcbmTA5eXEwsMFgb4T8Qmar+TYq5q1gh9ItC8ug3Ty2IHCtCig6wM1frNt0Vm0nf3/54IjRrkO0B34Z2NO8B1JY9rwgeJOSZhYQpvCrSyKhu/BAc8jLcLofwX156UfuxlN6UK2dSbFabl1M4U09eWqfqdE4O8u9twGMlcL4ygYea1B3WF0fRULL63aVt3rgUtLsOZLbf7imPyRTBYX21bFTCmh8sVOBnVZIUCtjlzF3+C9kyWqADcHwNtJls+A72huLaHlysDrQxhf1iBHn51E+ubtHQxn4DiwddN1qt35I7yeKJQE0o+87je91IiWxyQDf4=; bm_sz=EC9ADEE682E86E76398C1B045AA0A38A~YAAQUP5eb1IJrEqBAQAA0acgUhCu9XuT510FtoAVLkR2JktcxIM0MZDOKwfK9KfEpPhVA3hFQV0sq/KZm5BVokhCrjonhlPwZ+/DwH/kFkXehnA0MK239E7KVRH9PXHT0VaPlfYqPj32ATmrWcktMzp+KVxOzjKfHNh5Uzbi/q7xepruwPzw3aP+qSHPd49a2vIA6ksImGMRPspNo2knMVbcBz+o7sb7oZYNK9QxG59X3qLc3d+EhDUXaATAxwpGlGa0ulTgQ2zkKgVxg6h/m7CbA19MkSRhhBdki6SYeFEr+UGHQOBxF8z02P83IZ3kJHqkdKERzUCNnVQ=~3425072~3490625; msToken=VswSuQODxSBK2i3hXQqJf4czxUJjRD1YtGPQnrYKYZLI2WB4CXMhV52wwgpDxQAiKghUHnn5d1W-bj-Di07g5T65xb9fX1yrA34DzHHHiNKCjJ_7SY9HZISVDKASNE3EN5w-OZU7FCbmm30=; bm_mi=707168D1E1AB0C0C69C3033AE61CDFD9~YAAQUP5ebwogrEqBAQAAr7IsUhCbGPGrkr/ky3JnNj3EfAOAibhSvQVYwWhC74b1gM7WXDB8yOVwRwS17WYIdOX/de4crS5tNq/929DjkurfAhDTM3/0YgO64FiWPs3pJXoqk8p9wk0T90TbZ/f8DTDqlx78W3tHJLWw2V9kXUDd608Thr0n0HcJyHyWfNxDRy/IDot+/KyMrVi4a9h7N6qf+xon1Aqjh2lXp9OUBhmKRrEjpofUbntqyk3RNpKVhfP8Ah+UACqxG+oBvLribeHPsM8VXU4mlbFbXJyqi4PVm9vcAmTAaidkZ71/7U8iFFK7h9X5Mme1BQ==~1; bm_sv=6B8D4C23E271306F74C11FCF7DD293C9~YAAQUP5ebwsgrEqBAQAAr7IsUhAnq0JF7H8HCzKbcCAekgvAH+WrzQ0ChLFGakTXcES8npFp+JS80M/jDp0s7IA3P+7ssoxk5E+mNgUdrXo+URjHCwQoEKtXbF970yR6I/5e+tGEG59eZJmnkxwGwsENIFbkLCIubQW1LGO3mhjEjD+48EgiBCZPflSTGIFbNxi+acQskSF/7ikdlMHBNtdSNT9+7u1GD1KBExelMNru233s744J4cLm4z5mwDqy~1; passport_fe_beating_status=true; ttwid=1|KOqSFKHgAdjK2GIHil4VzV__86S26_6Ejr_6zfRfCL4|1654941072|187bdd0d0843337bb93b695a0bb09509320f67c076bab0fd8db31d3918181b54; _abck=11FF5A55808CA8B6ED7B920FF1E9F65C~-1~YAAQUP5ebyogrEqBAQAAx7wsUghr5R/CrPTx3gVlBmJIf0WVd6950M+lLvb1wD6MtzfoivF/QUD7PMO6L//V43ZgaM7YsX+2BSAeQhLv7g+lSxGKUuyT8ADTx+T+0Yn7sd/X/gRh0AiQ8+/eYn6Ocoj1ZtfXv+eqWgIOchGJxNG24kGd51hA+wfX01SFGi3j6k+8TB6FSyG7DSMWoQPHzc7Q03/15CdQgJneDhYavR6daSV5NozURfzWoRhfvbjDNfzk1+JVx3Kn5yoT3yD+qNGVezB4XloWaDq1JmE0yGHurY+EQDZmUneodESjqS/J023XKomywAMhmCKCgqHuAmQ6w9KnO05mV7Gfhd1T6kU=~-1~-1~-1; odin_tt=6328e40b47ba0a665705cb5de70643b96800c8fc3b9b7da8aa7ba7eb7b99c498f69c18d8c4dd4164e46c060638a87a4cdcf8b3e44d6cb319eb9a54cc798225340177da3c6652d5b885f5b33a33c21875; msToken=jGLssUQG3FoA4NPtYTFOgVTZSHAKaKdmz-oHtMS6_u8uUCP4KoUHdmHv5Fck5OuAJfagMOhjtBOMEIEhY069kFI4KLIBoKp2D-at2FzQkAVKaOlmE8Hvi5ubXs6_0V9OxtWOuhlRKMtmAhw=',
+                    'tt_csrf_token=6SIDD67P-j5D8CDI6u5xiE7S67U5QrYG5KeM; __tea_cache_tokens_1988={"_type_":"default"}; s_v_web_id=verify_l48o7f0r_ciSxKgFj_jwiW_4p8x_ArVX_CQfpHT5roSTv; _abck=06028C54C4FC24FE8C9D69F9F52387F3~-1~YAAQZf1ebyrtRCmBAQAA7qMgUgiKMPjtTvkn03Z7P5Y3tJL+B4roARrCWaGVni1/CdPaF8XT+vY7AiZiPidZuvhotmCx5roWn1R3oRsYidkQEf9FjAUxunO5LohBShP6EkrT3fLIShA0rxAafZzI2GLpMszEb60CBN6Tjy1maB8lOQeHZcy229JFPSwb1FsTqoRBlGPco+mqLXUXFAktnmN/eW3jenVn4BJn3noyQV5mMPfOJw0Lig2+KC6wj/tw5ZWqaAEdLA0LcqVQ7KlQ2XCsm+ODufZ7q7WQqccUqCbGuvMvpCzXf0GbR+Fssd1knwRZmcF0rRlF3kdH3p4abLUNr8xvLVhi2jltq3o9JwX2GhWSxsAzK7o6XfNIoyc5fv8X1V9klMeXwA==~-1~-1~-1; bm_sz=32F1E8CEE64953B09E5CCD37E4314001~YAAQZf1ebyztRCmBAQAA7qMgUhDLdV36bSXnGFjpbqf1R/Vrq2Oubmyp2ZWBfqJXgoC181LpdCLD0WsCQAe6f+LCix4jvdpzhxHemtusT8UCE7csoV+YkPlOjx4B8xXvx65n5ozc2Le0oTCSYCRJaOPeuiWg0aXZ3nU5mA2uJE2DcXz31HdHY5l86hSSwTyoXUeYlRk4TkCCVMWsbW74d0sH0OaCUkXJaGlHeLBfzBr8YeCF6ZDXkvUPqfFTLsFTJLNmz995oFFFCTQRMZBYvZbrCd52tQcV09jqwxwfg91URZc=~3551301~3359813; msToken=SJg3R9xHsZMjN9CcblOQp2Zi_HE00TyvPQoVWlco2azZp00KfzFu4Fh7HU_VSvdx6VJBdxMSiwqJHYMLXMMH1Vt6ccTmDo2fBpEG4VkGD3WvMRA8QM2BrUMZnbblA7Rtm2QFGjYK8jVP6X4=; msToken=Hb0gCsRgUJ9zyxf1SH2zo7h7ebw2et3jOG3qm7a73DazZI8TdNjZQSEUNVh0i8heKDSj8hsvkWCnaSB1pcfnzW2wie5ghOB2V9t3aHARmoSzhMeNYckFBKX2PiRkV2JIklACWwcFSllMwBg=; ak_bmsc=2EED862E144C3063AAA64591C02579A4~000000000000000000000000000000~YAAQRf5eb8DmsiaBAQAAntilUhByCFv1kewV06ZQp0LyrwVQBagRFY/FUmrI3tPf65GsjqPS1+6MCmMP52VZOd4hClaSs2rewi/KtCj3K1j+gE1Hkn7pl4QWVbAQicSdVN0xJZlsWs5+BlZa6yWSem6r4ec4cBrPoAl41Ag21iOsgXuoCpb5Nfb7JSygkjWFHAeT0dftgAnZ15XqjkX6kmAq7XR5S6EGXJBuBx/azie4XWgE5k+NZG4m9E5ErFoVttsqHI+mZ84D5N+EBNY9pBQUrwoQZwCzkBBZIAYsLaqIYDXuaS1sE2OJHTPt7EjOO5MZ12IwUg2AuJVeFoJodOaS464NqQ8XgvrB0GlLf0j1aPkVpXAPkFc34f+aLAsMt05DCif1C+WASm8Q; ttwid=1|CpuP7rzQmOZir33aB2iwLcBtizcMzhOKaT5XLH-o39U|1654949015|4295780781b2bfaee4f2becda3b931477c549b7bd7e9737fdf0f277c71f79c07',
+            },
+            json: true,
+        };
+        try {
+            const response = await this.request<APIUserMetadata>(options);
+            const breakResponse = response;
+            if (breakResponse) {
+                const userMetadata: APIUserMetadata = breakResponse;
+                return userMetadata;
+            }
+        } catch (err) {
+            if (err.statusCode === 404) {
+                throw new Error('User does not exist');
+            }
+        }
+        throw new Error(`[v1] Can't extract user metadata from the html page. Make sure that user does exist and try to use proxy`);
     }
 
     /**
@@ -1201,7 +1297,7 @@ export class TikTokScraper extends EventEmitter {
                 throw new Error(`Can't extract video meta data`);
             }
 
-            if (response.includes("__NEXT_DATA__")){
+            if (response.includes('__NEXT_DATA__')) {
                 const rawVideoMetadata = response
                     .split(/<script id="__NEXT_DATA__" type="application\/json" nonce="[\w-]+" crossorigin="anonymous">/)[1]
                     .split(`</script>`)[0];
@@ -1219,7 +1315,7 @@ export class TikTokScraper extends EventEmitter {
                 return videoData as FeedItems;
             }
 
-            throw new Error('No available parser for html page')
+            throw new Error('No available parser for html page');
         } catch (error) {
             throw new Error(`Can't extract video metadata: ${this.input}`);
         }

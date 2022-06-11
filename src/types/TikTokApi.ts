@@ -373,3 +373,40 @@ export interface WebHtmlUserMetadata {
         };
     };
 }
+
+export interface APIUserMetadata {
+    statusCode: number;
+    shareMeta: {
+        title: string;
+        desc: string;
+    };
+    userInfo: {
+        user: {
+            id: string;
+            uniqueId: string;
+            nickname: string;
+            avatarThumb: string;
+            avatarMedium: string;
+            avatarLarger: string;
+            signature: string;
+            verified: boolean;
+            secUid: string;
+            secret: boolean;
+            ftc: boolean;
+            relation: number;
+            openFavorite: boolean;
+            commentSetting: number;
+            duetSetting: number;
+            stitchSetting: number;
+            privateAccount: boolean;
+        };
+        stats: {
+            followingCount: number;
+            followerCount: number;
+            heartCount: number;
+            videoCount: number;
+            diggCount: number;
+            heart: number;
+        };
+    };
+}

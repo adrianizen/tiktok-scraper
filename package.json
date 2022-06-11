@@ -1,6 +1,6 @@
 {
     "name": "tiktok-scraper",
-    "version": "1.4.35",
+    "version": "1.4.36",
     "description": "TikTok Scraper & Downloader. Scrape information from User, Trending and HashTag pages and download video posts",
     "main": "./build/index.js",
     "types": "./build/index.d.ts",
@@ -22,6 +22,7 @@
         "request": "^2.88.0",
         "request-promise": "^4.2.4",
         "socks-proxy-agent": "^5.0.0",
+        "tiktok-signature": "^1.6.1",
         "yargs": "^14.2.0"
     },
     "devDependencies": {
